@@ -1,17 +1,19 @@
+#include "osx_platform.h"
+
 #import <Foundation/Foundation.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <assert.h>
 
-struct OSXApp
+struct OSX_App_Impl
 {
     id helper;
     id delegate;
     __CGEventSource* eventSource;
 };
 
-struct OSXWindow
+struct OSX_Window_Impl
 {
     id object; // id is obj-c void* pointer type, but always points to obj-c obj
     id delegate;
@@ -37,23 +39,23 @@ struct OSXWindow
 
 @interface WindowDelegate : NSObject 
 {
-    OSXWindow* window;
+    OSX_Window_Impl* window;
 }
 
-- (instancetype)init:(OSXWindow*)window;
+- (instancetype)init:(OSX_Window_Impl*)window;
 
-- (OSXWindow*)editorWindow;
+- (OSX_Window_Impl*)editorWindow;
 
 @end // interface WindowDelegate
 
 @implementation WindowDelegate
 
-- (OSXWindow*)editorWindow
+- (OSX_Window_Impl*)editorWindow
 {
     return window;
 }
 
-- (instancetype)init:(OSXWindow*)window
+- (instancetype)init:(OSX_Window_Impl*)window
 {
     self = [super init];
     if (self != nil)
@@ -75,18 +77,18 @@ struct OSXWindow
 
 @interface ContentView : NSView <NSTextInputClient>
 {
-    OSXWindow* window;
+    OSX_Window_Impl* window;
     NSTrackingArea* trackingArea;
     NSMutableAttributedString* markedText;
 }
 
-- (instancetype)init:(OSXWindow*)window;
+- (instancetype)init:(OSX_Window_Impl*)window;
 
 @end // interface ContentView
 
 @implementation ContentView
 
-- (instancetype)init:(OSXWindow *)window
+- (instancetype)init:(OSX_Window_Impl *)window
 {
     self = [super init];
     if (self != nil)
@@ -152,11 +154,12 @@ struct OSXWindow
         // _glfwInputWindowCloseRequest(window);
 
     // NSWindow* window = [[sender] mainWindow];
+    // TODO(pw): See if we can handle this via the event loop instead.
     NSWindow* window = [[NSApplication sharedApplication] mainWindow];
     if (window != nil)
     {
         WindowDelegate* window_delegate = (__bridge WindowDelegate*)window.delegate;
-        OSXWindow* osx_window = [window_delegate editorWindow];
+        OSX_Window_Impl* osx_window = [window_delegate editorWindow];
         osx_window->should_terminate = true;
     }
     
@@ -222,26 +225,27 @@ struct OSXWindow
 
 @end // AppHelper
 
-int main(int argc, const char * argv[]) 
+OSX_App osx_create_app()
 {
-    OSXApp app = {};
-    OSXWindow window = {};
+    OSX_App app_wrapper = {};
+    app_wrapper.impl = new OSX_App_Impl;
+    OSX_App_Impl* app = app_wrapper.impl;
 
     @autoreleasepool 
     {
-        app.helper = [[AppHelper alloc] init];
-        assert(app.helper != nil);
+        app->helper = [[AppHelper alloc] init];
+        assert(app->helper != nil);
 
         [NSThread detachNewThreadSelector:@selector(doNothing:)
-                        toTarget:app.helper
+                        toTarget:app->helper
                         withObject:nil];
 
         [NSApplication sharedApplication]; // Creates the application instance if it doesnt yet exist.
 
-        app.delegate = [[AppDelegate alloc] init];
-        assert(app.delegate != nil);
+        app->delegate = [[AppDelegate alloc] init];
+        assert(app->delegate != nil);
 
-        [NSApp setDelegate:app.delegate];
+        [NSApp setDelegate:app->delegate];
 
         // NSEvent* (^block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
         // {
@@ -259,15 +263,15 @@ int main(int argc, const char * argv[])
         // NSDictionary* defaults = @{@"ApplePressAndHoldEnabled":@NO};
         // [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
 
-        [[NSNotificationCenter defaultCenter] addObserver:app.helper
-                                              selector:@selector(selectedKeyboardInputSourceChanged:)
-                                              name:NSTextInputContextKeyboardSelectionDidChangeNotification
-                                              object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:app->helper
+                                            selector:@selector(selectedKeyboardInputSourceChanged:)
+                                            name:NSTextInputContextKeyboardSelectionDidChangeNotification
+                                            object:nil];
 
         // createKeyTables();
 
-        app.eventSource = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
-        CGEventSourceSetLocalEventsSuppressionInterval(app.eventSource, 0.0);
+        app->eventSource = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+        CGEventSourceSetLocalEventsSuppressionInterval(app->eventSource, 0.0);
 
         // _glfwPollMonitorsCocoa();
 
@@ -275,9 +279,26 @@ int main(int argc, const char * argv[])
         {
             [NSApp run];
         }
+    }
 
-        window.delegate = [[WindowDelegate alloc] init:&window];
-        assert(window.delegate != nil);
+    return app_wrapper;
+}
+
+void osx_destroy_app(OSX_App app)
+{
+    delete app.impl;
+}
+
+OSX_Window osx_create_window(OSX_App app)
+{
+    OSX_Window window_wrapper = {};
+    window_wrapper.impl = new OSX_Window_Impl;
+    OSX_Window_Impl* window = window_wrapper.impl;
+
+    @autoreleasepool 
+    {
+        window->delegate = [[WindowDelegate alloc] init:window];
+        assert(window->delegate != nil);
 
         NSRect windowRect = NSMakeRect(0, 0, 500, 500);
 
@@ -286,70 +307,78 @@ int main(int argc, const char * argv[])
                                NSWindowStyleMaskClosable |
                                NSWindowStyleMaskResizable;
     
-        window.object = [[NSWindow alloc]
+        window->object = [[NSWindow alloc]
             initWithContentRect:windowRect
             styleMask:windowStyle
             backing:NSBackingStoreBuffered
             defer:NO
         ];
-        assert(window.object != nil);
+        assert(window->object != nil);
 
         const NSWindowCollectionBehavior behavior = NSWindowCollectionBehaviorFullScreenPrimary |
                                                     NSWindowCollectionBehaviorManaged;
-        [window.object setCollectionBehavior:behavior];
+        [window->object setCollectionBehavior:behavior];
 
-        [window.object setFrameAutosaveName:@"EditorWindow"];
+        [window->object setFrameAutosaveName:@"EditorWindow"];
 
-        window.view = [[ContentView alloc] init:&window];
+        window->view = [[ContentView alloc] init:window];
 
-        NSView* ns_view = (__bridge NSView*)window.view;
+        NSView* ns_view = (__bridge NSView*)window->view;
         if (![ns_view.layer isKindOfClass:[CAMetalLayer class]])
         {
             [ns_view setLayer:[CAMetalLayer layer]];
             [ns_view setWantsLayer:YES];
         }
 
-        window.retina = true;
+        window->retina = true;
 
-        [window.object setContentView:window.view];
-        [window.object makeFirstResponder:window.view];
-        [window.object setTitle:@"Editor"];
-        [window.object setDelegate:window.delegate];
-        [window.object setAcceptsMouseMovedEvents:YES];
-        [window.object setRestorable:NO];
+        [window->object setContentView:window->view];
+        [window->object makeFirstResponder:window->view];
+        [window->object setTitle:@"Editor"];
+        [window->object setDelegate:window->delegate];
+        [window->object setAcceptsMouseMovedEvents:YES];
+        [window->object setRestorable:NO];
 
         // _glfwGetWindowSizeCocoa(window, &window->ns.width, &window->ns.height);
         // _glfwGetFramebufferSizeCocoa(window, &window->ns.fbWidth, &window->ns.fbHeight);
 
         // Show window
-        [window.object orderFront:nil];
+        [window->object orderFront:nil];
 
         // Focus window
         [NSApp activateIgnoringOtherApps:YES];
-        [window.object makeKeyAndOrderFront:nil];
+        [window->object makeKeyAndOrderFront:nil];
     }
     
-    @autoreleasepool {
+    return window_wrapper;
+}
+
+bool osx_window_closing(OSX_Window window)
+{
+    return window.impl->should_terminate;
+}
+
+void osx_destroy_window(OSX_Window window)
+{
+    delete window.impl;
+}
+
+void osx_pump_events()
+{
+    @autoreleasepool 
+    {
         for (;;)
         {
-            if (window.should_terminate)
-            {
-                break;
-            }
-
             NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
                                     untilDate:[NSDate distantPast]
                                     inMode:NSDefaultRunLoopMode
                                     dequeue:YES];
-            // if (event == nil)
-                // break;
-
-            if (event != nil)
+            if (event == nil)
             {
-                [NSApp sendEvent:event];
+                break;
             }
+
+            [NSApp sendEvent:event];
         }
     } // autoreleasepool
-
-    return 0;
 }
